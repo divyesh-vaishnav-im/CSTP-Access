@@ -37,23 +37,29 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
             const body = context.payload.issue.body || '';
             const match = body.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
             const email = match ? match[0].toLowerCase() : '';
-            const ok = /^[a-z0-9._%+-]+@infopercept\.com$/.test(email);
+            const domains = JSON.parse(fs.readFileSync('config/allowed-domains.json', 'utf8'))
+              .domains.map((d) => String(d).toLowerCase());
+            const ok = email !== '' && domains.some((d) => email.endsWith('@' + d));
             core.setOutput('ok', ok ? 'yes' : 'no');
             core.setOutput('email', ok ? email : '');
+            core.setOutput('domains', domains.map((d) => '**@' + d + '**').join(', '));
 
-      - name: Close non-Infopercept requests
+      - name: Close requests from other domains
         if: steps.parse.outputs.ok == 'no'
         uses: actions/github-script@v7
+        env:
+          DOMAINS: ${{ steps.parse.outputs.domains }}
         with:
           script: |
             await github.rest.issues.createComment({
               ...context.repo,
               issue_number: context.issue.number,
-              body: 'Sorry — access is only available for **@infopercept.com** work email addresses. '
-                + 'If you have one, open a new request and enter it exactly (e.g. `yourname@infopercept.com`).',
+              body: `Sorry — access is only available for work email addresses on: ${process.env.DOMAINS}. `
+                + 'If you have one, open a new request and enter it exactly.',
             });
             await github.rest.issues.update({
               ...context.repo,
@@ -89,7 +95,7 @@ jobs:
               ...context.repo,
               issue_number: context.issue.number,
               body: `📩 @${context.payload.issue.user.login} — a **6-digit verification code** has been sent to your `
-                + 'Infopercept inbox (1–2 minutes; check junk/spam too).\n\n'
+                + 'work inbox (1–2 minutes; check junk/spam too).\n\n'
                 + '**Reply to this request with just the code** and your access is granted automatically.\n\n'
                 + '*Typed the wrong email? Close this request and open a new one.*',
             });

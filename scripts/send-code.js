@@ -11,9 +11,13 @@
 //   ISSUE_NUMBER, AUTHOR          the access-request issue and its author
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const nodemailer = require('nodemailer');
 
-const ALLOWED_EMAIL = /^[a-z0-9._%+-]+@infopercept\.com$/i;
+const ALLOWED_DOMAINS = JSON.parse(
+  fs.readFileSync(path.join(__dirname, '..', 'config', 'allowed-domains.json'), 'utf8'),
+).domains.map((d) => String(d).toLowerCase());
 
 const env = {};
 for (const key of ['CODE_KEY', 'MAIL_USERNAME', 'MAIL_PASSWORD', 'TO_EMAIL', 'ISSUE_NUMBER', 'AUTHOR']) {
@@ -24,8 +28,10 @@ for (const key of ['CODE_KEY', 'MAIL_USERNAME', 'MAIL_PASSWORD', 'TO_EMAIL', 'IS
   }
 }
 
-if (!ALLOWED_EMAIL.test(env.TO_EMAIL)) {
-  console.error('Refusing to send: the recipient is not an @infopercept.com address.');
+const toEmail = env.TO_EMAIL.toLowerCase();
+if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(toEmail)
+  || !ALLOWED_DOMAINS.some((d) => toEmail.endsWith('@' + d))) {
+  console.error('Refusing to send: the recipient is not on an allowed email domain.');
   process.exit(1);
 }
 
