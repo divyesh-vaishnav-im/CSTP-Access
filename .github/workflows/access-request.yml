@@ -65,7 +65,7 @@ jobs:
               ...context.repo,
               issue_number: context.issue.number,
               state: 'closed',
-              body: '*(Request closed — no valid @infopercept.com email.)*',
+              body: '*(Request closed — the email address is not on an approved domain.)*',
             });
 
       - name: Email the verification code
