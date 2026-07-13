@@ -1,0 +1,23 @@
+name: Request repository access
+description: Get read access to the CSTP Module 1 course content (Infopercept team only)
+title: "[ACCESS] Repository access request"
+labels: [access-request]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **How this works**
+
+        1. Enter your **@infopercept.com** work email below and submit.
+        2. A 6-digit verification code is emailed to that address (1–2 minutes).
+        3. Reply to the created request with the code.
+        4. Your GitHub account is invited to the course repository automatically — accept the invitation and you're done.
+
+        Your email address is removed from the public request right after the code is sent.
+  - type: input
+    id: email
+    attributes:
+      label: Your Infopercept work email
+      placeholder: yourname@infopercept.com
+    validations:
+      required: true

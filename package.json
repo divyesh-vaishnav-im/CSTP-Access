@@ -1,0 +1,8 @@
+{
+  "name": "cstp-access",
+  "private": true,
+  "description": "Automated access requests for the CSTP Module 1 course content",
+  "dependencies": {
+    "nodemailer": "^6.9.0"
+  }
+}

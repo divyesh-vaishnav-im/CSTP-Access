@@ -1,0 +1,204 @@
+name: Access requests
+
+# Self-service access to the private CSTP-Module1-Content repo:
+#   1. Someone opens an access request (issue form) with their work email.
+#   2. If the email is @infopercept.com, a 6-digit code is sent to it and the
+#      email is redacted from the public issue. Any other domain: auto-closed.
+#   3. The requester replies with the code; if it matches, their GitHub
+#      account is invited with read-only access and the request is closed.
+#
+# Secrets: CODE_KEY (HMAC key), MAIL_USERNAME / MAIL_PASSWORD (Office 365),
+#          GH_PAT (fine-grained PAT with Administration:write on the content repo).
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+env:
+  CONTENT_REPO: divyesh-vaishnav-im/CSTP-Module1-Content
+
+jobs:
+  send-code:
+    name: Validate the request and email a code
+    if: >
+      github.event_name == 'issues' &&
+      contains(github.event.issue.labels.*.name, 'access-request')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the email domain
+        id: parse
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || '';
+            const match = body.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+            const email = match ? match[0].toLowerCase() : '';
+            const ok = /^[a-z0-9._%+-]+@infopercept\.com$/.test(email);
+            core.setOutput('ok', ok ? 'yes' : 'no');
+            core.setOutput('email', ok ? email : '');
+
+      - name: Close non-Infopercept requests
+        if: steps.parse.outputs.ok == 'no'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: 'Sorry — access is only available for **@infopercept.com** work email addresses. '
+                + 'If you have one, open a new request and enter it exactly (e.g. `yourname@infopercept.com`).',
+            });
+            await github.rest.issues.update({
+              ...context.repo,
+              issue_number: context.issue.number,
+              state: 'closed',
+              body: '*(Request closed — no valid @infopercept.com email.)*',
+            });
+
+      - name: Email the verification code
+        if: steps.parse.outputs.ok == 'yes'
+        env:
+          CODE_KEY: ${{ secrets.CODE_KEY }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          TO_EMAIL: ${{ steps.parse.outputs.email }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+        run: |
+          npm install --no-fund --no-audit --loglevel=error
+          node scripts/send-code.js
+
+      - name: Redact the email and post instructions
+        if: steps.parse.outputs.ok == 'yes'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.update({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: '*(Email address redacted after processing ✅)*',
+            });
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: `📩 @${context.payload.issue.user.login} — a **6-digit verification code** has been sent to your `
+                + 'Infopercept inbox (1–2 minutes; check junk/spam too).\n\n'
+                + '**Reply to this request with just the code** and your access is granted automatically.\n\n'
+                + '*Typed the wrong email? Close this request and open a new one.*',
+            });
+
+      - name: Report a problem on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: '⚠️ Something went wrong while processing this request — please contact Divyesh Vaishnav directly.',
+            });
+
+  verify:
+    name: Verify the code and grant access
+    if: >
+      github.event_name == 'issue_comment' &&
+      !github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      contains(github.event.issue.labels.*.name, 'access-request') &&
+      github.event.comment.user.login == github.event.issue.user.login
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the code
+        id: check
+        env:
+          CODE_KEY: ${{ secrets.CODE_KEY }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const crypto = require('crypto');
+            const match = (context.payload.comment.body || '').match(/\b(\d{6})\b/);
+            if (!match) { core.setOutput('result', 'ignore'); return; } // ordinary comment, not a code
+
+            const hex = crypto.createHmac('sha256', process.env.CODE_KEY)
+              .update(`${context.payload.issue.number}:${context.payload.issue.user.login}`)
+              .digest('hex');
+            const expected = String(parseInt(hex.slice(0, 12), 16) % 1000000).padStart(6, '0');
+
+            if (crypto.timingSafeEqual(Buffer.from(match[1]), Buffer.from(expected))) {
+              core.setOutput('result', 'ok');
+              return;
+            }
+            const comments = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.payload.issue.number, per_page: 100,
+            });
+            const failed = comments.data.filter((c) =>
+              c.user.type === 'Bot' && c.body.includes('does not match')).length;
+            core.setOutput('result', failed >= 4 ? 'lockout' : 'wrong');
+
+      - name: Grant read access
+        if: steps.check.outputs.result == 'ok'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          USERNAME: ${{ github.event.issue.user.login }}
+        run: gh api --method PUT "repos/$CONTENT_REPO/collaborators/$USERNAME" -f permission=pull
+
+      - name: Confirm and close
+        if: steps.check.outputs.result == 'ok'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const user = context.payload.issue.user.login;
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.payload.issue.number,
+              body: `✅ Verified! @${user} has been invited with **read access** to the course repository.\n\n`
+                + `**One last step:** accept the invitation — check the email GitHub just sent you, or open `
+                + `https://github.com/${process.env.CONTENT_REPO}/invitations\n\n`
+                + '*The invitation expires in 7 days. If it expires, just open a new access request.*',
+            });
+            await github.rest.issues.update({
+              ...context.repo, issue_number: context.payload.issue.number, state: 'closed',
+            });
+
+      - name: Wrong code
+        if: steps.check.outputs.result == 'wrong'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.payload.issue.number,
+              body: '❌ That code does not match — check the email again and reply with the exact 6-digit code.',
+            });
+
+      - name: Too many attempts
+        if: steps.check.outputs.result == 'lockout'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.payload.issue.number,
+              body: '🔒 Too many incorrect attempts — this request is closed. Open a new access request to try again.',
+            });
+            await github.rest.issues.update({
+              ...context.repo, issue_number: context.payload.issue.number, state: 'closed',
+            });
+
+      - name: Report a problem on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.payload.issue.number,
+              body: '⚠️ Something went wrong while granting access — please contact Divyesh Vaishnav directly.',
+            });
