@@ -1,14 +1,17 @@
 name: Access requests
 
-# Self-service access to the private CSTP-Module1-Content repo:
+# Self-service access to the private CSTP course content repo(s):
 #   1. Someone opens an access request (issue form) with their work email.
 #   2. If the email is @infopercept.com, a 6-digit code is sent to it and the
 #      email is redacted from the public issue. Any other domain: auto-closed.
 #   3. The requester replies with the code; if it matches, their GitHub
-#      account is invited with read-only access and the request is closed.
+#      account is invited with read-only access to every repo listed in
+#      CONTENT_REPOS below, and the request is closed.
 #
 # Secrets: CODE_KEY (HMAC key), MAIL_USERNAME / MAIL_PASSWORD (Office 365),
-#          GH_PAT (fine-grained PAT with Administration:write on the content repo).
+#          GH_PAT (fine-grained PAT with Administration:write on EVERY repo
+#          listed in CONTENT_REPOS — when a new module's content repo is
+#          added below, the PAT's repo access must be updated too).
 
 on:
   issues:
@@ -20,7 +23,9 @@ permissions:
   issues: write
 
 env:
-  CONTENT_REPO: divyesh-vaishnav-im/CSTP-Module1-Content
+  # Comma-separated list — one verified request grants access to every repo here.
+  # Adding a new module: append its content repo (and give GH_PAT access to it).
+  CONTENT_REPOS: divyesh-vaishnav-im/CSTP-Module1-Content
 
 jobs:
   send-code:
@@ -153,7 +158,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           USERNAME: ${{ github.event.issue.user.login }}
-        run: gh api --method PUT "repos/$CONTENT_REPO/collaborators/$USERNAME" -f permission=pull
+        run: |
+          IFS=',' read -ra REPOS <<< "$CONTENT_REPOS"
+          for repo in "${REPOS[@]}"; do
+            gh api --method PUT "repos/$repo/collaborators/$USERNAME" -f permission=pull
+          done
 
       - name: Confirm and close
         if: steps.check.outputs.result == 'ok'
@@ -161,13 +170,15 @@ jobs:
         with:
           script: |
             const user = context.payload.issue.user.login;
+            const repos = process.env.CONTENT_REPOS.split(',').map((r) => r.trim());
+            const plural = repos.length > 1;
+            const links = repos.map((r) => `https://github.com/${r}/invitations`).join('\n');
             await github.rest.issues.createComment({
               ...context.repo,
               issue_number: context.payload.issue.number,
-              body: `✅ Verified! @${user} has been invited with **read access** to the course repository.\n\n`
-                + `**One last step:** accept the invitation — check the email GitHub just sent you, or open `
-                + `https://github.com/${process.env.CONTENT_REPO}/invitations\n\n`
-                + '*The invitation expires in 7 days. If it expires, just open a new access request.*',
+              body: `✅ Verified! @${user} has been invited with **read access** to the course repositor${plural ? 'ies' : 'y'}.\n\n`
+                + `**One last step:** accept the invitation${plural ? 's' : ''} — check the email${plural ? 's' : ''} GitHub just sent you, or open:\n${links}\n\n`
+                + `*Invitation${plural ? 's' : ''} expire${plural ? '' : 's'} in 7 days. If ${plural ? 'one expires' : 'it expires'}, just open a new access request.*`,
             });
             await github.rest.issues.update({
               ...context.repo, issue_number: context.payload.issue.number, state: 'closed',
